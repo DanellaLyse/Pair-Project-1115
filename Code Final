@@ -1,6 +1,6 @@
 """
 Raspberry Pi Pico – Two-Board PWM Monitor (Full Duplex + ADS1015 ADC)
-Author: Danella (uOttawa)
+Author: Danella and Zahra 
 Goal:
 TX Pico generates PWM; RX Pico reads analog signal via ADS1015 (I2C) and sends results back.
 Includes UART full-duplex communication and error handling.
