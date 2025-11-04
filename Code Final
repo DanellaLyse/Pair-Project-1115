@@ -153,7 +153,7 @@ def run_full_duplex():
         except Exception as e:
             print(f"[ERROR] UART read failed: {e}")
 
-        # 3️TIMEOUT & ERROR HANDLING AYYYYYYYYY If 3-10 seconds past its orange and if 10+ Re dbut keeps trying 
+        # TIMEOUT & ERROR HANDLING AYYYYYYYYY If 3-10 seconds past its orange and if 10+ Re dbut keeps trying 
         delta = time.ticks_diff(now, last_received)
         if delta > WARN_TIMEOUT and delta <= ERROR_TIMEOUT:
             print(f"[WARN] No UART data for {delta/1000:.1f}s — still sending...")
