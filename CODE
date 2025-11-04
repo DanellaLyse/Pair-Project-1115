@@ -1,0 +1,179 @@
+"""
+Raspberry Pi Pico – Two-Board PWM Monitor (Full Duplex + ADS1015 ADC)
+Author: Danella and Zahra
+Goal:
+TX Pico generates PWM; RX Pico reads analog signal via ADS1015 (I2C) and sends results back.
+Includes UART full-duplex communication and error handling.
+"""
+from ads1x15 import ADS1015 #mind you this does not even work for us :(, but if it were This loads your external ADC driver, the file ads1x15.py that the professor gave.)
+#It’s what lets the Pico talk to the ADS1015 chip through I²C and read analog voltages.
+from machine import Pin, PWM, UART, I2C, ADC
+import time
+#ROLE SELECTION 
+ROLE = "TX"  # change to "RX" for the receiver board
+
+# PIN SETTINGS
+PWM_OUT_PIN = 16        # TX PWM output
+PWM_FREQ_HZ = 1000      # 1 kHz PWM frequency, how shes oscillating 
+
+# ADS1015 I2C pins (on RX Pico)
+I2C_SDA = 14            # GP14
+I2C_SCL = 15            # GP15
+ADS1015_ADDR = 0x48     # Default I2C address
+ADS1015_CHANNEL = 2     # AIN2 = PWM RC filter input
+
+# UART pins for both Picos
+UART_ID = 1
+UART_BAUD = 115200
+UART_TX_PIN = 8 # this is really tx to rx and vice versa
+UART_RX_PIN = 9
+
+# PWM behavior
+TX_SWEEP = True          # Sweep from 0–100%
+TX_FIXED_DUTY = 50.0     # Used if TX_SWEEP = False, only if sweeping is off
+TX_STEP = 5.0            # Sweep step size, decrease or increase
+TX_DWELL_MS = 800        # Delay between steps
+
+#  IMPORTS 
+
+# control gpio pins, generates pulse width modulation, handles serial data, talks to external chips 
+
+# Import ADS1015 driver
+
+
+#  UTILITY, thisensures any values stay between two bouds, so 0-100
+def clamp(x, low, high):
+    return max(low, min(high, x))
+
+#  PWM GENERATOR (TX SIDE) 
+class PwmSource:
+    def __init__(self, pin, freq):#starts pwm on a specific pin 
+        self.pwm = PWM(Pin(pin))
+        self.pwm.freq(freq)
+    def set_duty(self, percent): #sets how on it is, the duty cycle 
+        percent = clamp(percent, 0, 100)
+        self.pwm.duty_u16(int(percent / 100 * 65535))
+        
+
+#  ADS1015 READER (RX SIDE) #this is a bit of a tuff one, I don't exactly understand how this works?
+class ExternalADC:
+    def __init__(self, sda, scl, address=0x48, channel=2):
+        self.i2c = I2C(1, sda=Pin(sda), scl=Pin(scl)) #this sets up I^2C communication
+        self.adc = ADS1015(self.i2c, address, 1)
+        self.channel = channel
+        print("[RX] I2C scan:", [hex(a) for a in self.i2c.scan()])
+    def read_percent(self):
+        raw = self.adc.read(0, self.channel)  # differential read AIN0 vs AIN2, voltage reading
+        # ADS1015 range = ±2048 counts → map to 0–100%
+        percent = (raw + 2048) / 4096 * 100
+        return clamp(percent, 0, 100)
+#converts the raw readign -2048 to 2047  to 0-100%
+
+#  UART LINK CLASS
+#manages the data exchange between two boards 
+class SerialLink:
+    def __init__(self, uart_id, baud, tx_pin, rx_pin):
+        self.u = UART(uart_id, baudrate=baud, tx=Pin(tx_pin), rx=Pin(rx_pin))
+    def send(self, tag, value): #send formatted message "SEt, 50"
+        msg = f"{tag},{value}\n".encode()
+        self.u.write(msg)
+    def read(self):#checks for new messages! decodes them splits into: a tag (set ot MEAS)
+        if self.u.any():
+            line = self.u.readline()
+            if line:
+                try:
+                    tag, val = line.decode().strip().split(',')
+                    return tag, float(val)
+                except:
+                    pass
+        return None
+
+# FULL DUPLEX MAIN FUNCTION
+def run_full_duplex():
+    print(f"Running {ROLE} (Full Duplex + ADS1015 + Error Handling)...")
+    link = SerialLink(UART_ID, UART_BAUD, UART_TX_PIN, UART_RX_PIN)
+    led = Pin(25, Pin.OUT) #turns on led
+
+    # Initialize PWM (TX only)
+    if ROLE == "TX":
+        pwm = PwmSource(PWM_OUT_PIN, PWM_FREQ_HZ)
+        duty = TX_FIXED_DUTY
+        step = TX_STEP if TX_SWEEP else 0
+        pot = ADC(26)  # GP26
+
+# inside TX loop (replace sweep section)
+        pot_val = pot.read_u16()        # 0–65535
+        duty = pot_val / 65535 * 100    # convert to 0–100%
+        pwm.set_duty(duty)
+        link.send("SET", duty)
+        print(f"[TX] Duty from knob: {duty:.1f}%")
+        #cretaed the pwm output and sets it starting duty 
+    else:
+        adc = ExternalADC(I2C_SDA, I2C_SCL, ADS1015_ADDR, ADS1015_CHANNEL)
+        # pico ste suo I^2C and the ADs reader
+
+    # Timers: Warn if no response after 3 secondds
+    #marks it as lost if its silent for 10 seconds
+    last_send = time.ticks_ms()
+    last_received = time.ticks_ms()
+    WARN_TIMEOUT = 3000    # 3s no UART → warning
+    ERROR_TIMEOUT = 10000  # 10s → connection lost
+    lost_connection = False
+
+    # MAIN LOOP 
+    while True:
+        now = time.ticks_ms()
+
+        # 1 SEND MESSAGE REGULARLY
+        if time.ticks_diff(now, last_send) > TX_DWELL_MS:  #every 800mms, TX sends amd Rx recieved
+            try:
+                if ROLE == "TX":
+                    
+                    pwm.set_duty(duty)
+                    link.send("SET", duty)
+                    print(f"[TX] Sent duty: {duty:.1f}%")
+                    duty += step
+                    if duty > 100 or duty < 0:
+                        step = -step
+                        duty = clamp(duty, 0, 100)
+                else:
+                    meas = adc.read_percent()
+                    link.send("MEAS", meas)
+                    print(f"[RX] Sent measured: {meas:.1f}%")
+                led.toggle()
+            except Exception as e:
+                print(f"[ERROR] UART send failed: {e}")
+            last_send = now
+
+        # 2READ ANY INCOMING MESSAGES
+        try:
+            msg = link.read()
+            if msg:
+                tag, val = msg
+                last_received = now
+                #Tx recieved MEAS from RX and RX recievevd SET form TX 
+                lost_connection = False
+                if ROLE == "TX" and tag == "MEAS":
+                    print(f"[TX] Received MEAS: {val:.1f}% | Error: {val - duty:.1f}%")
+                elif ROLE == "RX" and tag == "SET":
+                    print(f"[RX] Received SET: {val:.1f}% (target duty)")
+                else:
+                    print(f"[{ROLE}] Received {tag}: {val:.1f}%")
+        except Exception as e:
+            print(f"[ERROR] UART read failed: {e}")
+
+        # 3TIMEOUT & ERROR HANDLING AYYYYYYYYY If 3-10 seconds past its orange and if 10+ Re dbut keeps trying 
+        delta = time.ticks_diff(now, last_received)
+        if delta > WARN_TIMEOUT and delta <= ERROR_TIMEOUT:
+            print(f"[WARN] No UART data for {delta/1000:.1f}s — still sending...")
+        elif delta > ERROR_TIMEOUT and not lost_connection:
+            print("[ERROR] Connection lost! Check wiring.")
+            lost_connection = True
+
+        time.sleep(0.05)
+
+# RUN 
+
+#The TX Pico generates a PWM signal, which passes through an RC filter to turn it into a smooth voltage. The RX Pico measures that voltage using the ADS1015 ADC chip over I²C, converts it to a percentage, and sends it back to the TX Pico via UART. Both boards constantly send and receive messages in full-duplex mode, with error detection in case communication stops.
+run_full_duplex()
+
